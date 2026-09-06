@@ -72,8 +72,15 @@ function fetch_discogs_inventory(){
 // Fetch release data including images, genres, and styles
 function fetch_discogs_release($release_id) {
 
-    global $env; 
-    $token = $env['DISCOGS_TOKEN'];
+    global $env_discog;
+
+    $token = $env_discog['DISCOGS_TOKEN'] ?? '';
+    
+    if (empty($token)) {
+        error_log('Discogs Release API: Missing DISCOGS_TOKEN.');
+        return false;
+    }
+
     $url = "https://api.discogs.com/releases/{$release_id}";
 
     
@@ -156,7 +163,7 @@ function create_discogs_posts() {
             $cat_id = $cat_id['term_id'];
         }
 
-    echo '<h2>Imported Videos:</h2><br><br>';
+    echo '<h2>Imported Discogs:</h2><br><br>';
     foreach ($inventory['listings'] as $item) {
 
         ?>
@@ -221,54 +228,219 @@ function create_discogs_posts() {
 
         <?php
 
-        $existing = get_posts(array(
-            'meta_key' => 'discogs_listing_id',
-            'meta_value' => $item['id'],
-            'post_type' => 'post',
-            'post_status' => 'any',
-            'numberposts' => 1,
-        ));
-       
+            $listing_id = (string) $item['id'];
 
-        if (empty($existing)) {
+            $existing = get_posts([
+                'post_type'      => 'post',
+                'post_status'    => 'any',
+                'posts_per_page' => 1,
+                'fields'         => 'ids',
+                'meta_query'     => [
+                    [
+                        'key'     => 'discogs_listing_id',
+                        'value'   => $listing_id,
+                        'compare' => '=',
+                    ],
+                ],
+            ]);
 
-            $post_id = wp_insert_post(array(
-                'post_title' => $title,
-                'post_content' => '<p>' . ($description ?? 'No description available.') . '</p>' . $tracklist_html,
-                'post_status' => 'publish',
-                'post_type' => 'post',
-                'post_category' => array_unique(array_merge([$parent_cat_id, $cat_id, $genre_id], $style_ids)),
-                'meta_input' => array(
-                    'discogs_listing_id' => $item['id'],
-                    'discogs_url' => $url,
-                    'discogs_price' => $price,             
-                    'discogs_year' => $release_year,
-                    'discogs_image_uri' => $image_url,
+            $post_data = [
+                'post_title'   => $title,
+                'post_content' =>
+                    '<p>' .
+                    ($description ?: 'No description available.') .
+                    '</p>' .
+                    $tracklist_html,
+                'post_status'  => 'publish',
+                'post_type'    => 'post',
+                'post_category' => array_values(
+                    array_unique(
+                        array_map(
+                            'absint',
+                            array_merge(
+                                [$parent_cat_id, $cat_id, $genre_id],
+                                $style_ids
+                            )
+                        )
+                    )
                 ),
-            ));     
-            
-            
-          
-            if ($post_id && !is_wp_error($post_id)) {                
-                if ($release_data && !empty($release_data['images'])) {
-                    require_once(ABSPATH . 'wp-admin/includes/media.php');
-                    require_once(ABSPATH . 'wp-admin/includes/file.php');
-                    require_once(ABSPATH . 'wp-admin/includes/image.php');
+            ];
 
-                    $tmp = download_url($release_data['images'][0]['uri']);
-                    if (!is_wp_error($tmp)) {
-                        $file_array = array(
-                            'name' => basename($release_data['images'][0]['uri']),
-                            'tmp_name' => $tmp,
+            $is_new_post = empty($existing);
+
+            if ($is_new_post) {
+                /*
+                * Create a post for a listing that has not been imported before.
+                */
+                $post_id = wp_insert_post(
+                    $post_data,
+                    true
+                );
+            } else {
+                /*
+                * Update the existing post whenever the Discogs inventory is refreshed.
+                */
+                $post_id = absint($existing[0]);
+
+                $post_data['ID'] = $post_id;
+
+                $post_id = wp_update_post(
+                    $post_data,
+                    true
+                );
+            }
+
+            if (is_wp_error($post_id)) {
+                error_log(
+                    sprintf(
+                        'Discogs post save failed for listing %s: %s',
+                        $listing_id,
+                        $post_id->get_error_message()
+                    )
+                );
+
+                continue;
+            }
+
+            /*
+            * These values must be updated for both new and existing posts.
+            */
+            update_post_meta(
+                $post_id,
+                'discogs_listing_id',
+                $listing_id
+            );
+
+            update_post_meta(
+                $post_id,
+                'discogs_url',
+                esc_url_raw($url)
+            );
+
+            update_post_meta(
+                $post_id,
+                'discogs_price',
+                $price
+            );
+
+            update_post_meta(
+                $post_id,
+                'discogs_year',
+                $release_year
+            );
+
+            update_post_meta(
+                $post_id,
+                'discogs_image_uri',
+                esc_url_raw($image_url)
+            );
+
+            error_log(
+                sprintf(
+                    'Discogs listing %s: %s post %d with price %s',
+                    $listing_id,
+                    $is_new_post ? 'created' : 'updated',
+                    $post_id,
+                    $price
+                )
+            );
+
+            /*
+            * Download the image for a new post, or when the Discogs image URL changed.
+            */
+            $stored_image_url = get_post_meta(
+                $post_id,
+                '_discogs_downloaded_image_uri',
+                true
+            );
+
+            $should_update_image =
+                !empty($image_url) &&
+                (
+                    !has_post_thumbnail($post_id) ||
+                    $stored_image_url !== $image_url
+                );
+
+            if ($should_update_image) {
+                require_once ABSPATH . 'wp-admin/includes/media.php';
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                require_once ABSPATH . 'wp-admin/includes/image.php';
+
+                $tmp_file = download_url(
+                    $image_url,
+                    20
+                );
+
+                if (is_wp_error($tmp_file)) {
+                    error_log(
+                        sprintf(
+                            'Discogs image download failed for post %d: %s',
+                            $post_id,
+                            $tmp_file->get_error_message()
+                        )
+                    );
+                } else {
+                    $image_path = wp_parse_url(
+                        $image_url,
+                        PHP_URL_PATH
+                    );
+
+                    $filename = $image_path
+                        ? basename($image_path)
+                        : 'discogs-' . $release_id . '.jpg';
+
+                    $file_array = [
+                        'name'     => sanitize_file_name($filename),
+                        'tmp_name' => $tmp_file,
+                    ];
+
+                    $attachment_id = media_handle_sideload(
+                        $file_array,
+                        $post_id,
+                        $title
+                    );
+
+                    if (is_wp_error($attachment_id)) {
+                        @unlink($tmp_file);
+
+                        error_log(
+                            sprintf(
+                                'Discogs image attachment failed for post %d: %s',
+                                $post_id,
+                                $attachment_id->get_error_message()
+                            )
                         );
-                        $attachment_id = media_handle_sideload($file_array, $post_id);
-                        if (!is_wp_error($attachment_id)) {
-                            set_post_thumbnail($post_id, $attachment_id);
+                    } else {
+                        $old_thumbnail_id = get_post_thumbnail_id(
+                            $post_id
+                        );
+
+                        set_post_thumbnail(
+                            $post_id,
+                            $attachment_id
+                        );
+
+                        update_post_meta(
+                            $post_id,
+                            '_discogs_downloaded_image_uri',
+                            esc_url_raw($image_url)
+                        );
+
+                        /*
+                        * Remove the replaced thumbnail after the new image succeeds.
+                        */
+                        if (
+                            $old_thumbnail_id &&
+                            $old_thumbnail_id !== $attachment_id
+                        ) {
+                            wp_delete_attachment(
+                                $old_thumbnail_id,
+                                true
+                            );
                         }
                     }
                 }
             }
-        }
     }
 }
  add_action('discogs_update_posts', 'create_discogs_posts');    
@@ -279,15 +451,55 @@ function create_discogs_posts() {
 add_action('admin_menu', 'discogs_add_admin_menu');
 
 function discogs_inventory_page() {
-    echo '<div class="wrap"><h1>Discogs Inventory</h1>
-    <p>Click the button below to refresh the Discogs inventory.</p>
-    <form method="post"><input type="hidden" name="discogs_refresh" value="1">
-    <input type="submit" class="button button-primary" value="Refresh Inventory"></form></div>';
+    if (
+        isset($_POST['discogs_refresh']) &&
+        current_user_can('manage_options')
+    ) {
+        check_admin_referer(
+            'discogs_refresh_inventory',
+            'discogs_refresh_nonce'
+        );
 
-    if (isset($_POST['discogs_refresh'])) {
         create_discogs_posts();
-        echo '<div class="updated"><p>Inventory has been refreshed.</p></div>';
+
+        echo '<div class="notice notice-success is-dismissible">';
+        echo '<p>Discogs inventory and existing posts have been updated.</p>';
+        echo '</div>';
     }
+    ?>
+    <div class="wrap">
+        <h1>Discogs Inventory</h1>
+
+        <p>
+            Refresh the Discogs inventory and update all corresponding
+            WordPress posts.
+        </p>
+
+        <form method="post">
+            <?php
+            wp_nonce_field(
+                'discogs_refresh_inventory',
+                'discogs_refresh_nonce'
+            );
+            ?>
+
+            <input
+                type="hidden"
+                name="discogs_refresh"
+                value="1"
+            >
+
+            <?php
+            submit_button(
+                'Refresh Inventory',
+                'primary',
+                'submit',
+                false
+            );
+            ?>
+        </form>
+    </div>
+    <?php
 }
 
  // Shortcode to display posts with Buy button
