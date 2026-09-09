@@ -181,8 +181,19 @@ function create_discogs_posts() {
         echo '<h5>' . $title . '</h5>';
         echo '-------------------------------------------<br>';
         $price = $item['price']['value'] . ' ' . $item['price']['currency'];
-        $release_year = !empty($item['release']['year']) ? $item['release']['year'] : ''; 
-        $description = $item['release']['description'] . '<br>' . $item['release']['label'] . '<br>' . $release_year;     
+
+        $release_year = !empty($item['release']['year'])
+            ? $item['release']['year']
+            : '';
+        
+        $seller_notes = isset($item['comments'])
+            && is_scalar($item['comments'])
+                ? sanitize_textarea_field(
+                    (string) $item['comments']
+                )
+                : '';
+
+        $description = $item['release']['description'] . '<br>' . $seller_notes .'<br>' . $item['release']['label'] . '<br>' . $release_year;     
         $url = $item['uri'];
         $release_data = fetch_discogs_release($release_id);
         $image_url = $release_data['images'][0]['uri'];
@@ -521,7 +532,7 @@ function discogs_posts_shortcode($atts) {
                 while ($query->have_posts()) {           
                     $query->the_post();
                     $url = get_post_meta(get_the_ID(), 'discogs_url', true);
-                    $year = get_post_meta(get_the_ID(), 'discogs_year', true);
+                    $year = get_post_meta(get_the_ID(), 'discogs_year', true) ?: 'Unknown';
                     $image_url = get_post_meta(get_the_ID(), 'discogs_image_uri', true);
                     $categories = get_the_category();                    
 
