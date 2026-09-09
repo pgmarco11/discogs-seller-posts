@@ -142,8 +142,8 @@ function create_discogs_posts() {
     }
 
     // Ensure the category exists
-    $category = 'vinyl-records';
-    $parent_category = 'collectibles';
+    $category = 'Vinyl Records';
+    $parent_category = 'Collectibles';
 
         $parent_cat_id = term_exists($parent_category, 'category');
 
@@ -519,7 +519,7 @@ function discogs_posts_shortcode($atts) {
     $args = array(
         'post_type'      => 'post',
         'post_status'    => 'publish',
-        'category_name'  => 'vinyl-records',
+        'category_name'  => 'Vinyl Records',
         'posts_per_page' => $atts['number'],
     );
     $query = new WP_Query($args);
