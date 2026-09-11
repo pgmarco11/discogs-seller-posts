@@ -183,8 +183,10 @@ function create_discogs_posts() {
         $price = $item['price']['value'] . ' ' . $item['price']['currency'];
 
         $release_year = !empty($item['release']['year'])
-            ? $item['release']['year']
-            : '';
+                ? sanitize_text_field(
+                (string) $item['release']['year']
+            )
+            : 'Unknown';
         
         $seller_notes = isset($item['comments'])
             && is_scalar($item['comments'])
